@@ -186,6 +186,22 @@
   .result-card .rays { animation: spin 24s linear infinite; }
   .result-text { margin-top: 12px; font-size: 14px; }
 
+  /* ---------- Vários giros ---------- */
+  .spins { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 10px; list-style: none; padding: 0; }
+  .spin-token {
+    min-width: 80px; padding: 6px 8px; border-radius: 8px;
+    border: 1.5px dashed #C9C9C9; color: var(--muted);
+    font-size: 13px; font-weight: 800; line-height: 1.25;
+    transition: background .3s, border-color .3s, transform .3s;
+  }
+  .spin-token small { display: block; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+  .spin-token.is-current { border-style: solid; border-color: var(--navy); color: var(--navy); transform: translateY(-2px); }
+  .spin-token.is-prize { border: 1.5px solid var(--yellow-deep); background: var(--yellow); color: var(--navy); animation: pop .5s cubic-bezier(.2,1.5,.4,1); }
+  .spin-token.is-none { border: 1.5px solid #E2E2E2; background: #F3F3F3; }
+  .btn-spin small { display: block; margin-top: 2px; font-size: 12px; font-weight: 700; text-transform: none; letter-spacing: 0; opacity: .75; }
+  .spin-note { margin-top: 14px; padding: 9px 10px; border-radius: 8px; font-size: 15px; font-weight: 800; background: #F3F3F3; animation: rise .35s ease both; }
+  .spin-note.is-win { background: #FFF4CC; color: var(--navy); }
+
   /* Banner + grupo */
   .banner {
     display: grid; place-items: center; width: 150px; aspect-ratio: 3 / 2; margin: 0 auto;
@@ -234,9 +250,9 @@
 
 <div class="proto" role="group" aria-label="Controle de teste do protótipo">
   <span>Protótipo:</span>
-  <button type="button" data-scenario="no_prize" aria-pressed="true">Testar: Não ganhou</button>
-  <button type="button" data-scenario="prize_100" aria-pressed="false">Testar: Ganhou R$ 100</button>
-  <button type="button" data-scenario="prize_50" aria-pressed="false">Testar: Ganhou R$ 50</button>
+  <button type="button" data-scenario="s3_one" aria-pressed="true">3 giros, 1 premiado</button>
+  <button type="button" data-scenario="s3_none" aria-pressed="false">3 giros, nenhum</button>
+  <button type="button" data-scenario="s3_two" aria-pressed="false">3 giros, 2 premiados</button>
 </div>
 
 <header class="site-header">
@@ -271,7 +287,8 @@
     <div class="prize-box">
       <button type="button" class="sound-btn" id="soundBtn" aria-label="Desativar som" aria-pressed="true">🔊</button>
       <h2>Cota premiada:</h2>
-      <p class="box-sub" id="statusSub" aria-live="polite">🎁 Você ganhou um giro na Roleta da Sorte!</p>
+      <p class="box-sub" id="statusSub" aria-live="polite">Preparando sua roleta…</p>
+      <ol class="spins" id="spins" aria-label="Seus giros"></ol>
 
       <div class="wheel-wrap" id="wheelWrap">
         <canvas class="wheel-canvas" id="wheel" role="img" aria-label="Roleta da sorte"></canvas>
@@ -288,6 +305,7 @@
         <div class="hub" aria-hidden="true">AOR</div>
       </div>
 
+      <p class="spin-note" id="spinNote" role="status" hidden></p>
       <button type="button" class="btn-spin" id="spinBtn">Girar a roleta</button>
 
       <div class="result" id="result" role="status" hidden>
@@ -354,29 +372,37 @@
     { id: 'n4',   type: 'no_prize', value: 0,   label: 'Não foi\ndessa vez', bg: '#EEF0F4', fg: '#6B6B6B' }
   ];
 
-  const MOCK_RESULTS = {
-    no_prize:  { id: 'rol_demo_001', type: 'no_prize', value: 0,   title: 'Não foi dessa vez',
-                 message: 'Não desanime! Você ainda tem chance de ganhar uma cota premiada.',
-                 cta: { label: 'Comprar novamente', href: '#comprar' } },
-    prize_100: { id: 'rol_demo_002', type: 'prize', value: 100, title: 'Você ganhou R$ 100,00!',
-                 message: 'Parabéns! Seu prêmio foi de R$ 100,00.',
-                 cta: { label: 'Ver meu prêmio', href: '#meu-premio' } },
-    prize_50:  { id: 'rol_demo_003', type: 'prize', value: 50,  title: 'Você ganhou R$ 50,00!',
-                 message: 'Parabéns! Seu prêmio foi de R$ 50,00.',
-                 cta: { label: 'Ver meu prêmio', href: '#meu-premio' } }
+  // A quantidade de giros é regra do backend (ex.: 1 giro a cada X números comprados).
+  const none = (id) => ({ id, type: 'no_prize', value: 0, title: 'Não foi dessa vez' });
+  const win = (id, value) => ({ id, type: 'prize', value, title: 'Você ganhou!' });
+  const MOCK_SCENARIOS = {
+    s3_one:  [none('g1'), win('g2', 100), none('g3')],
+    s3_none: [none('g1'), none('g2'), none('g3')],
+    s3_two:  [win('g1', 50), none('g2'), win('g3', 100)]
   };
-  let mockScenario = 'no_prize';
+  let mockScenario = 's3_one';
+  let mockCursor = 0;
 
   const WheelAPI = {
-    /** Registra o giro e devolve o resultado JÁ sorteado no servidor.
-        A roleta começa a girar antes da resposta chegar e só "freia" quando ela chega. */
+    /** Quantos giros a compra liberou e quais já foram usados (para retomar ao recarregar a página). */
+    async getSession(purchaseId) {
+      // PRODUÇÃO: GET /api/compras/{id}/roleta → { total: 3, spins: [ ...resultados já girados ] }
+      await wait(200);
+      mockCursor = 0;
+      return { total: MOCK_SCENARIOS[mockScenario].length, spins: [] };
+    },
+    /** Consome 1 giro e devolve o resultado JÁ sorteado no servidor. */
     async spin(purchaseId) {
       // PRODUÇÃO:
       // const res = await fetch(`/api/compras/${encodeURIComponent(purchaseId)}/roleta/girar`, { method: 'POST', credentials: 'include' });
       // if (!res.ok) throw new Error('Falha ao girar a roleta');
-      // return res.json(); // { id, type, value, segmentId?, title, message, cta }
-      await wait(700); // simula latência de rede
-      return JSON.parse(JSON.stringify(MOCK_RESULTS[mockScenario]));
+      // return res.json(); // { id, type, value, segmentId?, title, remaining }
+      await wait(700);
+      const list = MOCK_SCENARIOS[mockScenario];
+      if (mockCursor >= list.length) throw new Error('Sem giros restantes');
+      const r = JSON.parse(JSON.stringify(list[mockCursor++]));
+      r.remaining = list.length - mockCursor;
+      return r;
     }
   };
 
@@ -725,18 +751,59 @@
     return matches.length ? matches[Math.floor(Math.random() * matches.length)].i : -1;
   }
 
+  const spinsEl = $('spins');
+  const spinNote = $('spinNote');
+  let session = { total: 0, spins: [] };
   let busy = false;
   let loadToken = 0;
 
+  const remaining = () => session.total - session.spins.length;
+  const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+
+  function renderTokens(current) {
+    spinsEl.innerHTML = '';
+    for (let i = 0; i < session.total; i++) {
+      const r = session.spins[i];
+      const li = document.createElement('li');
+      li.className = 'spin-token';
+      let value = 'A girar';
+      if (r) {
+        li.classList.add(r.type === 'prize' ? 'is-prize' : 'is-none');
+        value = r.type === 'prize' ? brl(r.value) : 'Sem prêmio';
+      } else if (i === current) {
+        li.classList.add('is-current');
+        value = 'Girando…';
+      }
+      li.innerHTML = `<small>${i + 1}º giro</small>${escapeHTML(value)}`;
+      spinsEl.appendChild(li);
+    }
+  }
+
+  function spinLabel() {
+    const n = remaining();
+    return session.spins.length === 0
+      ? 'Girar a roleta'
+      : `Girar novamente<small>${n === 1 ? 'último giro' : plural(n, 'giro restante', 'giros restantes')}</small>`;
+  }
+
   async function onSpin() {
-    if (busy) return;
+    if (busy || remaining() <= 0) return;
     busy = true;
     const token = loadToken;
+    const index = session.spins.length;
     Sound.unlock();
+
+    // limpa o destaque do giro anterior
+    wheel.stop();
+    wheel.setHighlight(-1);
+    els.wheelWrap.classList.remove('is-win');
+    spinNote.hidden = true;
+
     els.spinBtn.disabled = true;
     els.spinBtn.textContent = 'Girando…';
-    els.statusSub.textContent = 'Girando… boa sorte! 🍀';
+    els.statusSub.textContent = `Giro ${index + 1} de ${session.total}… boa sorte! 🍀`;
     els.wheelWrap.classList.add('is-spinning');
+    renderTokens(index);
 
     const stopped = wheel.spin();
     let result = null;
@@ -756,54 +823,83 @@
     const idx = await stopped;
     if (token !== loadToken) return;
     els.wheelWrap.classList.remove('is-spinning');
+    busy = false;
 
     if (!result) {
-      busy = false;
+      renderTokens(-1);
       els.spinBtn.disabled = false;
       els.spinBtn.textContent = 'Tentar de novo';
       els.statusSub.textContent = 'Não foi possível concluir o giro. Tente novamente.';
       return;
     }
 
+    session.spins.push(result);
+    renderTokens(-1);
     wheel.setHighlight(idx);
-    showResult(result);
+
+    if (result.type === 'prize') {
+      els.wheelWrap.classList.add('is-win');
+      Confetti.burst(els.wheelWrap);
+      Sound.win();
+      if (navigator.vibrate) navigator.vibrate([30, 40, 60]);
+    } else {
+      Sound.lose();
+    }
+
+    if (remaining() > 0) {
+      spinNote.className = 'spin-note' + (result.type === 'prize' ? ' is-win' : '');
+      spinNote.textContent = result.type === 'prize'
+        ? `🎉 Você ganhou ${brl(result.value)} neste giro!`
+        : 'Não foi dessa vez 😔 Mas ainda tem mais!';
+      spinNote.hidden = false;
+      els.statusSub.textContent = `Você ainda tem ${plural(remaining(), 'giro', 'giros')}!`;
+      els.spinBtn.disabled = false;
+      els.spinBtn.innerHTML = spinLabel();
+    } else {
+      showSummary();
+    }
   }
 
-  function showResult(r) {
+  function showSummary() {
     els.spinBtn.hidden = true;
-    if (r.type === 'prize') {
-      const { cur, num } = brlParts(r.value);
-      els.wheelWrap.classList.add('is-win');
+    spinNote.hidden = true;
+    const winners = session.spins.filter((s) => s.type === 'prize');
+    const total = winners.reduce((acc, s) => acc + s.value, 0);
+
+    if (winners.length) {
+      const { cur, num } = brlParts(total);
       els.statusSub.textContent = 'Que sorte! 🍀';
       els.resultCard.className = 'result-card prize--win';
       els.resultCard.innerHTML = `
         <div class="rays" aria-hidden="true"></div>
         <div class="prize-inner">
-          <p class="win-label">🎉 Parabéns! Você ganhou</p>
+          <p class="win-label">🎉 Parabéns! ${winners.length > 1 ? 'No total você ganhou' : 'Você ganhou'}</p>
           <p class="win-amount"><span class="cur">${escapeHTML(cur)}</span>${escapeHTML(num)}</p>
         </div>`;
-      Confetti.burst(els.wheelWrap);
-      Sound.win();
-      if (navigator.vibrate) navigator.vibrate([30, 40, 60]);
+      els.resultText.textContent = `${plural(winners.length, 'giro premiado', 'giros premiados')} de ${session.total}.`;
+      els.resultCta.textContent = winners.length > 1 ? 'Ver meus prêmios' : 'Ver meu prêmio';
+      els.resultCta.href = '#meus-premios';
+      if (session.spins.length && session.spins[session.spins.length - 1].type !== 'prize') {
+        Confetti.burst(els.resultCard); // comemora o total mesmo se o último giro não premiou
+      }
     } else {
-      els.statusSub.textContent = 'Resultado da roleta';
+      els.statusSub.textContent = 'Todos os giros foram usados';
       els.resultCard.className = 'result-card prize--none';
       els.resultCard.innerHTML = `
         <div class="prize-inner">
           <span class="prize-emoji" aria-hidden="true">🎟️</span>
-          <p class="prize-title">${escapeHTML(r.title)} 😔</p>
+          <p class="prize-title">Não foi dessa vez 😔</p>
         </div>`;
-      Sound.lose();
+      els.resultText.textContent = 'Não desanime! Você ainda tem chance de ganhar uma cota premiada.';
+      els.resultCta.textContent = 'Comprar novamente';
+      els.resultCta.href = '#comprar';
     }
-    els.resultText.textContent = r.message;
-    els.resultCta.textContent = r.cta.label;
-    els.resultCta.href = r.cta.href;
     els.result.hidden = false;
-    setTimeout(() => els.result.scrollIntoView({ behavior: REDUCED_MOTION ? 'auto' : 'smooth', block: 'nearest' }), 150);
+    setTimeout(() => els.result.scrollIntoView({ behavior: REDUCED_MOTION ? 'auto' : 'smooth', block: 'nearest' }), 400);
   }
 
-  function reset() {
-    loadToken++;
+  async function reset() {
+    const token = ++loadToken;
     busy = false;
     wheel.stop();
     Confetti.stop();
@@ -811,11 +907,21 @@
     wheel.setHighlight(-1);
     els.wheelWrap.classList.remove('is-spinning', 'is-win');
     els.result.hidden = true;
+    spinNote.hidden = true;
     els.spinBtn.hidden = false;
-    els.spinBtn.disabled = false;
-    els.spinBtn.textContent = 'Girar a roleta';
-    els.statusSub.textContent = '🎁 Você ganhou um giro na Roleta da Sorte!';
+    els.spinBtn.disabled = true;
+    els.statusSub.textContent = 'Preparando sua roleta…';
     wheel.idle();
+
+    session = await WheelAPI.getSession(PURCHASE.id);
+    if (token !== loadToken) return;
+    renderTokens(-1);
+    if (remaining() <= 0) { showSummary(); return; }
+    els.statusSub.textContent = session.spins.length
+      ? `Você ainda tem ${plural(remaining(), 'giro', 'giros')}!`
+      : `🎁 Sua compra liberou ${plural(session.total, 'giro', 'giros')} na Roleta da Sorte!`;
+    els.spinBtn.disabled = false;
+    els.spinBtn.innerHTML = spinLabel();
   }
 
   function toast(msg) {
